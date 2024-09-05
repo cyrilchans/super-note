@@ -1,0 +1,2 @@
+# super-note
+just study
