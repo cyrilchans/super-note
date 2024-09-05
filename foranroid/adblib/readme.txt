@@ -1,3 +1,4 @@
+2024/09/06
 文件说明：
     1. get_window_usb.py 文件
         获取window电脑下符合adb协议的usb端口
@@ -13,11 +14,12 @@
 
 
 主要安装库：
+    python 3.9.11
     pip install pyusb
     pip install rsa
     （暂未指定库版本）
 
- 注意事项：
+注意事项：
     1. 电脑如果带有adb， 需使用adb kill-server关闭adb进程。
        （usb端口是唯一的， adb-server启动后会导致usb一直被占用）
     2. 需要使用pyusb库， 这个库在window环境下可能用不了，解决办法：
@@ -27,3 +29,4 @@
 
 参考资料：
      https://android.googlesource.com/platform/system/adb
+

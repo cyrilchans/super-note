@@ -54,10 +54,3 @@ def judgment_adb_device():
         yield adb_devices
     finally:
         pass
-
-
-if __name__ == '__main__':
-    with judgment_adb_device() as devices:
-        for device in devices:
-            print(device)
-            print([getattr(device, attr) for attr in vars(device)])
