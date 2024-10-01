@@ -1,0 +1,24 @@
+2024/09/11
+文件说明：
+    1. base_packing.py 文件
+       对pymobiledevice接口的封装代码
+    2. pymd3_manager.py 文件
+       封装的假方法， 切代码进去切不到实现
+    3. main.py 文件
+        编写的demo， 输入uuid， 自动拉起、关闭app store
+
+实现功能：
+    1. 实现>ios17.3的通信
+
+
+主要安装库：
+    python 3.9.11
+    pip install pymobiledevice3 == 4.13.12（指定库安装， 毕竟寄人篱下）
+
+注意事项：
+    1. 设备版本必须大于ios17.3.0
+        ios17.0-ios17.3 实现通信的方式不能通过usbmux
+    2. 截至目前测试支持ios18系统, pymobiledevice截至当前日期最新版本
+
+参考资料：
+     https://github.com/doronz88/pymobiledevice3
