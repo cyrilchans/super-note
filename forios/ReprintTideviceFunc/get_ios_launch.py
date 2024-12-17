@@ -1,0 +1,248 @@
+import datetime
+import os
+import plistlib
+import socket
+import ssl
+import struct
+
+from tidevice._instruments import AUXMessageBuffer, DTXPayload, DTXMessageHeader
+
+address = ('127.0.0.1', 27015)
+message_type = 8
+
+
+def dump_plist(payload, is_fist=True):
+    plist_bytes = plistlib.dumps(payload)
+    if is_fist:
+        length = 16 + len(plist_bytes)
+        header = struct.pack("IIII", length, 1, message_type, 1)
+    else:
+        length = len(plist_bytes)
+        header = struct.pack(">I", length)
+    return header+plist_bytes
+
+
+def loads_plist(sock, data, is_fist=True):
+    if is_fist:
+        (length, version, resp, tag) = struct.unpack("IIII", data)
+        length -= 16
+    else:
+        (length,) = struct.unpack(">I", data)
+    body_data = recv_all(sock, length)
+    payload = plistlib.loads(body_data)
+    return payload
+
+
+def recv_all(sock, size: int) -> bytearray:
+    buf = bytearray()
+    while len(buf) < size:
+        chunk = sock.recv(size - len(buf))
+        if not chunk:
+            raise "recvall: socket connection broken"
+        buf.extend(chunk)
+    return buf
+
+
+device_id = 0
+uuid = None
+
+
+def save_pem(pair_record):
+    appdir = r'D:\workplace\pythonProject\ssl'
+    fpath = os.path.join(appdir, uuid + "-" + "4" + ".pem")
+    if os.path.exists(fpath):
+        # 3 minutes not regenerate pemfile
+        st_mtime = datetime.datetime.fromtimestamp(
+            os.stat(fpath).st_mtime)
+        if datetime.datetime.now() - st_mtime < datetime.timedelta(
+                minutes=3):
+            return fpath
+    with open(fpath, "wb") as f:
+        pdata = pair_record
+        f.write(pdata['HostPrivateKey'])
+        f.write(b"\n")
+        f.write(pdata['HostCertificate'])
+    return fpath
+
+
+def get_pair():
+    payload = {
+        'MessageType': 'ReadPairRecord',  # Required
+        'PairRecordID': uuid,  # Required
+        'ClientVersionString': 'libusbmuxd 1.1.0',
+        'ProgName': "cyril",
+        'kLibUSBMuxVersion': 3
+    }
+    sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock1.settimeout(10)
+    sock1.connect(('127.0.0.1', 27015))
+
+    data = dump_plist(payload)
+    sock1.sendall(data)
+    b = sock1.recv(16)
+    payload = loads_plist(sock1, b)
+    record_data = payload['PairRecordData']
+    return plistlib.loads(record_data)
+
+
+def create_inner_connection(LOCKDOWN_PORT = 62078, _ssl: bool = False,  sl_dial_only: bool = False):
+    # print(f'通知usbmuxd连接设备, 并对应端口转换网络字节序：{LOCKDOWN_PORT}')
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(10)
+    sock.connect(('127.0.0.1', 27015))
+    _port = socket.htons(LOCKDOWN_PORT)
+    payload = {
+        'DeviceID': device_id,  # Required
+        'MessageType': 'Connect',  # Required
+        'PortNumber': _port,  # Required
+        'ProgName': "cyril",
+    }
+
+    data = dump_plist(payload)
+    sock.sendall(data)
+    b = sock.recv(16)
+    payload = loads_plist(sock, b)
+    print(f'连接设备并转换网络字节序完成，回包信息: {payload}')
+    pair_record = get_pair()
+    pem_path = save_pem(pair_record)
+    if _ssl:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+        context.verify_mode = ssl.CERT_NONE
+        context.set_ciphers("ALL:@SECLEVEL=0")
+        context.load_cert_chain(pem_path, keyfile=pem_path)
+        context.check_hostname = False
+        ssock = context.wrap_socket(sock, server_hostname="iphone.localhost")
+        sock = ssock
+
+    return sock
+
+
+def create_session():
+    sock = create_inner_connection()
+    # ----------------------------------------------------------------------
+    payload = {"Request": "QueryType"}
+    data = dump_plist(payload, is_fist=False)
+    sock.sendall(data)
+    b = sock.recv(4)
+    payload = loads_plist(sock, b, is_fist=False)
+    print(f"----->访问lockdown服务回包信息：{payload}")
+    pair_record = get_pair()
+    pem_path = save_pem(pair_record)
+    payload = {
+        "Request": "StartSession",
+        "HostID": pair_record['HostID'],
+        "SystemBUID": pair_record['SystemBUID'],
+        "ProgName": "tidevice",
+    }
+    data = dump_plist(payload, is_fist=False)
+    sock.sendall(data)
+    b = sock.recv(4)
+    payload = loads_plist(sock, b, is_fist=False)
+    print(f'----->请求访问lockdown回包信息：{payload}')
+    if payload['EnableSessionSSL']:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+        context.verify_mode = ssl.CERT_NONE
+        context.set_ciphers("ALL:@SECLEVEL=0")
+        context.load_cert_chain(pem_path, keyfile=pem_path)
+        context.check_hostname = False
+        ssock = context.wrap_socket(sock, server_hostname="iphone.localhost")
+        sock = ssock
+    payload = {
+            "Request": "GetValue",
+            "Label": "tidevice",
+        }
+    data = dump_plist(payload, is_fist=False)
+    sock.sendall(data)
+    b = sock.recv(4)
+    payload = loads_plist(sock, b, is_fist=False)
+    print(f'----->创建session成功后的回包: {payload}')
+    print(f"----->创建session成功后的回包ProductVersion输出: {payload['Value']['ProductVersion']}")
+    return sock
+
+
+def get_device_list():
+    global device_id, uuid
+    sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock1.settimeout(10)
+    sock1.connect(('127.0.0.1', 27015))
+    payload = {
+                "MessageType": "ListDevices",  # 必选
+                "ClientVersionString": "libusbmuxd 1.1.0",
+                "ProgName": 'cyril',
+                "kLibUSBMuxVersion": 3,
+                # "ProcessID": 0, # Xcode send it processID
+            }
+    data = dump_plist(payload)
+    sock1.sendall(data)
+    b = sock1.recv(16)
+    payload = loads_plist(sock1, b)
+    device_id = payload['DeviceList'][0]['DeviceID']
+    uuid = payload['DeviceList'][0]['Properties']['SerialNumber']
+
+
+def send_dtx_message(sock, payload, message_id, channel, expects_reply, conversation_index):
+    mheader = DTXMessageHeader.build(
+        message_id=message_id,
+        payload_length=len(payload),
+        channel=channel,
+        expects_reply=1 if expects_reply else 0,
+        conversation_index=conversation_index)
+
+    data = bytearray()
+    data.extend(mheader)
+    data.extend(payload)
+    sock.sendall(data)
+    print(f"SEND DTXMessage: channel:{channel} expect_reply:{int(expects_reply)}")
+
+
+def device_ipa_launch():
+    get_device_list()
+    print(f'----->请求后获取device id：{device_id}和 uuid：{uuid}')
+    print('----->开始创建session')
+    sock = create_session()
+    InstrumentsRemoteServerSecure = "com.apple.instruments.remoteserver.DVTSecureSocketProxy"
+    service_payload = {
+        "Request": "StartService",
+        "Service": InstrumentsRemoteServerSecure,
+        "ProgName": 'cyril',
+    }
+    data = dump_plist(service_payload, is_fist=False)
+    print(f'----->请求访问指定服务：{InstrumentsRemoteServerSecure}')
+    sock.sendall(data)
+    b = sock.recv(4)
+    payload = loads_plist(sock, b, is_fist=False)
+    print(f'----->接收访问服务的回包：{payload}')
+    print(f'----->请求访问指定地址: {payload["Port"]}')
+    sock = create_inner_connection(payload.get("Port"), _ssl=True)
+    # sock = create_inner_connection(payload.get("Port"))
+
+    # 发送第一个命令
+    capabilities = {
+        "com.apple.private.DTXBlockCompression": 2,  # version
+        "com.apple.private.DTXConnection": 1,  # version
+    }
+    payload = DTXPayload.build('_notifyOfPublishedCapabilities:', [capabilities])
+    send_dtx_message(sock, channel=0, payload=payload, message_id=1, expects_reply=False, conversation_index=0)
+
+
+    # 启动SERVICE_PROCESS
+    SERVICE_PROCESS_CONTROL = "com.apple.instruments.server.services.processcontrol"
+    channel_id = 1
+    # 协议太复杂， 直接调用tidevice的构建协议方法
+    aux = AUXMessageBuffer()
+    aux.append_u32(channel_id)
+    aux.append_obj(SERVICE_PROCESS_CONTROL)
+    payload = DTXPayload.build('_requestChannelWithCode:identifier:', aux)
+    send_dtx_message(sock, channel=0, payload=payload, message_id=2, expects_reply=True, conversation_index=0)
+
+    # 启动应用
+    method = "launchSuspendedProcessWithDevicePath:bundleIdentifier:environment:arguments:options:"
+    args = ['', 'com.tencent.xin', {}, [], {'StartSuspendedKey': 0, 'KillExisting': True}]
+    payload = DTXPayload.build(method, args)
+    send_dtx_message(sock, channel=1, payload=payload, message_id=3, expects_reply=True, conversation_index=0)
+
+    # 一定要接收一次回包
+    print(sock.recv(1))
+
+# todo: 仅参考实现思路 支持ios14-16
+device_ipa_launch()
